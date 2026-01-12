@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use bytes::Bytes;
 
-use http::{Request, StatusCode};
+use http::{Request, StatusCode, header};
 
 use rmcp::serde_json;
 
@@ -28,7 +28,8 @@ const MIME_APPLICATION_JSON: &str = "application/json";
 /// MIME type for Server-Sent Events stream
 const MIME_TEXT_EVENT_STREAM: &str = "text/event-stream";
 /// Combined MIME types for Accept header (JSON and SSE)
-const MIME_ACCEPT_JSON_SSE: &str = concatcp!(MIME_APPLICATION_JSON, ", ", MIME_TEXT_EVENT_STREAM);
+const MIME_APPLICATION_JSON_AND_EVENT_STREAM: &str =
+    concatcp!(MIME_APPLICATION_JSON, ", ", MIME_TEXT_EVENT_STREAM);
 
 /// Result of MCP initialization: URI for requests and pre-compiled bodies for each tool
 #[derive(Debug, Default)]
@@ -97,17 +98,20 @@ async fn http_hyper_mcp_client<B: HttpConnectionBuilder>(
     // MCP requires Content-Type: application/json for JSON-RPC requests
     // Accept header must include both application/json and text/event-stream for Streamable HTTP
     headers.insert(
-        http::header::CONTENT_TYPE,
-        http::header::HeaderValue::from_static(MIME_APPLICATION_JSON),
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static(MIME_APPLICATION_JSON),
     );
-    headers.insert(
-        http::header::ACCEPT,
-        http::header::HeaderValue::from_static(MIME_ACCEPT_JSON_SSE),
-    );
-
     let transport = if opts.mcp_sse {
+        headers.insert(
+            header::ACCEPT,
+            header::HeaderValue::from_static(MIME_APPLICATION_JSON),
+        );
         "sse"
     } else {
+        headers.insert(
+            header::ACCEPT,
+            header::HeaderValue::from_static(MIME_APPLICATION_JSON_AND_EVENT_STREAM),
+        );
         "streamableHttp"
     };
 
@@ -766,26 +770,22 @@ pub async fn mcp_sse_initialize<B: HttpConnectionBuilder>(uri: &str, opts: &Opti
                                         .as_i64()
                                         .map(NumberOrString::Number)
                                         .or_else(|| {
-                                            req_id.as_str().map(|s| NumberOrString::String(s.into()))
+                                            req_id
+                                                .as_str()
+                                                .map(|s| NumberOrString::String(s.into()))
                                         })
                                         .unwrap_or(NumberOrString::Number(0)),
                                     result: roots_result,
                                 };
 
-                                let roots_body =
-                                    serde_json::to_vec(&roots_response).unwrap_or_else(|e| {
+                                let roots_body = serde_json::to_vec(&roots_response)
+                                    .unwrap_or_else(|e| {
                                         fatal!(3, "failed to serialize roots/list response: {e}")
                                     });
 
                                 let _ = send_post(
-                                    endpoint,
-                                    &new_uri,
-                                    &host,
-                                    port,
-                                    roots_body,
-                                    &mut stats,
-                                    &rt_stats,
-                                    &opts,
+                                    endpoint, &new_uri, &host, port, roots_body, &mut stats,
+                                    &rt_stats, &opts,
                                 )
                                 .await;
 
