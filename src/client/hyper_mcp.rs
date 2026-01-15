@@ -485,17 +485,67 @@ where
     })
 }
 
-/// Extract JSON data from SSE format response
+/// Extract JSON data from SSE format response (accumulating multiple data lines)
 fn extract_sse_data(body: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let mut buffer = String::new();
+    let mut found = false;
+
     for line in body.lines() {
-        if let Some(data) = line.strip_prefix("data:") {
-            let json = data.trim();
-            if !json.is_empty() {
-                return Ok(json.to_string());
-            }
+        if let Some(rest) = line.strip_prefix("data:") {
+            found = true;
+            let content = rest.strip_prefix(' ').unwrap_or(rest);
+            buffer.push_str(content);
+            buffer.push('\n');
         }
     }
-    Err("no data field found in SSE response".into())
+
+    if found {
+        Ok(buffer)
+    } else {
+        Err("no data field found in SSE response".into())
+    }
+}
+
+/// Helper to read a complete SSE event from an Incoming body stream.
+/// Accumulates "data:" lines until an empty line is encountered.
+async fn read_sse_event(
+    body: &mut hyper::body::Incoming,
+    buffer: &mut String,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let mut event_data = String::new();
+
+    loop {
+        if let Some(idx) = buffer.find('\n') {
+            let line_full: String = buffer.drain(..=idx).collect();
+            let line = line_full.trim_end();
+
+            if line.is_empty() {
+                if !event_data.is_empty() {
+                    return Ok(event_data);
+                }
+                // heartbeat or empty event, continue reading
+                continue;
+            }
+
+            if let Some(rest) = line.strip_prefix("data:") {
+                let content = rest.strip_prefix(' ').unwrap_or(rest);
+                event_data.push_str(content);
+                event_data.push('\n');
+            }
+            // ignore other fields like event:, id:, retry:
+            continue;
+        }
+
+        match body.frame().await {
+            Some(Ok(frame)) => {
+                if let Some(chunk) = frame.data_ref() {
+                    buffer.push_str(&String::from_utf8_lossy(chunk));
+                }
+            }
+            Some(Err(e)) => return Err(format!("SSE read error: {e}").into()),
+            None => return Err("SSE stream ended".into()),
+        }
+    }
 }
 
 /// Initialize MCP connection via SSE handshake, fetch available tools,
@@ -548,27 +598,12 @@ pub async fn mcp_sse_initialize<B: HttpConnectionBuilder>(uri: &str, opts: &Opti
 
     let mut sse_body = sse_response.into_body();
     let mut buffer = String::new();
-    let mut new_path = String::new();
 
-    while let Some(frame) = sse_body.frame().await {
-        let frame = frame.unwrap_or_else(|e| fatal!(3, "SSE handshake body error: {e}"));
-        if let Some(chunk) = frame.data_ref() {
-            buffer.push_str(&String::from_utf8_lossy(chunk));
+    let endpoint_data = read_sse_event(&mut sse_body, &mut buffer)
+        .await
+        .unwrap_or_else(|e| fatal!(3, "failed to read SSE handshake event: {e}"));
 
-            while let Some(idx) = buffer.find('\n') {
-                let line: String = buffer.drain(..=idx).collect();
-                let line = line.trim();
-                if let Some(rest) = line.strip_prefix("data:") {
-                    new_path = rest.trim().to_string();
-                    break;
-                }
-            }
-
-            if !new_path.is_empty() {
-                break;
-            }
-        }
-    }
+    let new_path = endpoint_data.trim().to_string();
 
     if new_path.is_empty() {
         fatal!(3, "could not find endpoint in SSE handshake");
@@ -647,37 +682,9 @@ pub async fn mcp_sse_initialize<B: HttpConnectionBuilder>(uri: &str, opts: &Opti
     .await;
 
     // Read the initialize response from the SSE stream
-    buffer.clear();
-    let mut init_response_body = String::new();
-
-    while let Some(frame) = sse_body.frame().await {
-        let frame = frame.unwrap_or_else(|e| {
-            fatal!(
-                3,
-                "SSE read error while waiting for initialize response: {e}"
-            )
-        });
-        if let Some(chunk) = frame.data_ref() {
-            buffer.push_str(&String::from_utf8_lossy(chunk));
-
-            while let Some(idx) = buffer.find('\n') {
-                let line: String = buffer.drain(..=idx).collect();
-                let line = line.trim();
-                if let Some(rest) = line.strip_prefix("data:") {
-                    init_response_body = rest.trim().to_string();
-                    break;
-                }
-            }
-
-            if !init_response_body.is_empty() {
-                break;
-            }
-        }
-    }
-
-    if init_response_body.is_empty() {
-        fatal!(3, "no response received for initialize on SSE stream");
-    }
+    let init_response_body = read_sse_event(&mut sse_body, &mut buffer)
+        .await
+        .unwrap_or_else(|e| fatal!(3, "failed to read initialize response: {e}"));
 
     let init_result: JsonRpcResponse<InitializeResult> = serde_json::from_str(&init_response_body)
         .unwrap_or_else(|e| fatal!(3, "failed to parse initialize response: {e}"));
@@ -736,74 +743,56 @@ pub async fn mcp_sse_initialize<B: HttpConnectionBuilder>(uri: &str, opts: &Opti
     .await;
 
     // Read the response from the SSE stream, handling any server requests (like roots/list)
-    buffer.clear();
-    let mut tools_response_body = String::new();
+    let tools_response_body;
 
-    'sse_read: while let Some(frame) = sse_body.frame().await {
-        let frame = frame.unwrap_or_else(|e| {
-            fatal!(
-                3,
-                "SSE read error while waiting for tools/list response: {e}"
-            )
-        });
-        if let Some(chunk) = frame.data_ref() {
-            buffer.push_str(&String::from_utf8_lossy(chunk));
+    loop {
+        let data = read_sse_event(&mut sse_body, &mut buffer)
+            .await
+            .unwrap_or_else(|e| fatal!(3, "failed to read SSE event (tools/list): {e}"));
 
-            while let Some(idx) = buffer.find('\n') {
-                let line: String = buffer.drain(..=idx).collect();
-                let line = line.trim();
-                if let Some(rest) = line.strip_prefix("data:") {
-                    let data = rest.trim();
+        // Check if this is a server request (has "method" and "id")
+        if let Ok(server_req) = serde_json::from_str::<serde_json::Value>(&data) {
+            if let Some(method) = server_req.get("method").and_then(|m| m.as_str()) {
+                if let Some(req_id) = server_req.get("id") {
+                    // Handle roots/list request from server
+                    if method == "roots/list" {
+                        let roots_result = ListRootsResult { roots: vec![] };
+                        let roots_response = JsonRpcResponse {
+                            jsonrpc: Default::default(),
+                            id: req_id
+                                .as_i64()
+                                .map(NumberOrString::Number)
+                                .or_else(|| {
+                                    req_id
+                                        .as_str()
+                                        .map(|s| NumberOrString::String(s.into()))
+                                })
+                                .unwrap_or(NumberOrString::Number(0)),
+                            result: roots_result,
+                        };
 
-                    // Check if this is a server request (has "method" and "id")
-                    if let Ok(server_req) = serde_json::from_str::<serde_json::Value>(data) {
-                        if server_req.get("method").is_some() && server_req.get("id").is_some() {
-                            let method = server_req["method"].as_str().unwrap_or("");
-                            let req_id = &server_req["id"];
+                        let roots_body = serde_json::to_vec(&roots_response).unwrap_or_else(|e| {
+                            fatal!(3, "failed to serialize roots/list response: {e}")
+                        });
 
-                            // Handle roots/list request from server
-                            if method == "roots/list" {
-                                let roots_result = ListRootsResult { roots: vec![] };
-                                let roots_response = JsonRpcResponse {
-                                    jsonrpc: Default::default(),
-                                    id: req_id
-                                        .as_i64()
-                                        .map(NumberOrString::Number)
-                                        .or_else(|| {
-                                            req_id
-                                                .as_str()
-                                                .map(|s| NumberOrString::String(s.into()))
-                                        })
-                                        .unwrap_or(NumberOrString::Number(0)),
-                                    result: roots_result,
-                                };
+                        let _ = send_post(
+                            endpoint, &new_uri, &host, port, roots_body, &mut stats, &rt_stats,
+                            &opts,
+                        )
+                        .await;
 
-                                let roots_body = serde_json::to_vec(&roots_response)
-                                    .unwrap_or_else(|e| {
-                                        fatal!(3, "failed to serialize roots/list response: {e}")
-                                    });
-
-                                let _ = send_post(
-                                    endpoint, &new_uri, &host, port, roots_body, &mut stats,
-                                    &rt_stats, &opts,
-                                )
-                                .await;
-
-                                continue; // Keep reading for tools/list response
-                            }
-                        }
+                        continue; // Keep reading for tools/list response
                     }
-
-                    // This should be the tools/list response
-                    tools_response_body = data.to_string();
-                    break 'sse_read;
                 }
             }
-        }
-    }
 
-    if tools_response_body.is_empty() {
-        fatal!(3, "no response received for tools/list on SSE stream");
+            // If it's not roots/list, assume it's our response
+            // (Strictly we should check id=2, but let's be robust)
+            if server_req.get("method").is_none() {
+                tools_response_body = data;
+                break;
+            }
+        }
     }
 
     let tools_result: JsonRpcResponse<ListToolsResult> = serde_json::from_str(&tools_response_body)
