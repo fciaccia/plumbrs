@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use bytes::Bytes;
 
-use http::{Request, StatusCode, header};
+use http::{HeaderMap, Request, StatusCode, header};
 
 use rmcp::serde_json;
 
@@ -75,10 +75,13 @@ async fn http_hyper_mcp_client<B: HttpConnectionBuilder>(
         get_conn_address(&opts, &uri).unwrap_or_else(|| fatal!(1, "no host specified in uri"));
     let mut endpoint = build_conn_endpoint(&host, port);
 
+    let mut headers = build_headers(&uri, opts.as_ref())
+        .unwrap_or_else(|e| fatal!(2, "could not build headers: {e}"));
+
     // For SSE transport, initialize before connection loop
     let mut mcp = McpSetup::default();
     if opts.mcp_sse {
-        mcp = mcp_sse_initialize::<B>(&uri_str, opts.as_ref()).await;
+        mcp = mcp_sse_initialize::<B>(&uri_str, opts.as_ref(), &headers).await;
         uri = mcp.uri;
 
         if opts.host.is_none() {
@@ -91,9 +94,6 @@ async fn http_hyper_mcp_client<B: HttpConnectionBuilder>(
             endpoint = build_conn_endpoint(&host, port);
         }
     }
-
-    let mut headers = build_headers(&uri, opts.as_ref())
-        .unwrap_or_else(|e| fatal!(2, "could not build headers: {e}"));
 
     // MCP requires Content-Type: application/json for JSON-RPC requests
     // Accept header must include both application/json and text/event-stream for Streamable HTTP
@@ -556,7 +556,10 @@ async fn read_sse_event(
 /// 3. Sends `notifications/initialized` notification
 /// 4. Sends `tools/list` request to get available tools
 /// 5. Pre-compiles JSON-RPC bodies for each tool's `tools/call` invocation
-pub async fn mcp_sse_initialize<B: HttpConnectionBuilder>(uri: &str, opts: &Options) -> McpSetup {
+pub async fn mcp_sse_initialize<B>(uri: &str, opts: &Options, headers: &HeaderMap) -> McpSetup
+where
+    B: HttpConnectionBuilder,
+{
     use crate::stats::{RealtimeStats, Statistics};
 
     let base_uri: hyper::Uri = uri
@@ -582,12 +585,18 @@ pub async fn mcp_sse_initialize<B: HttpConnectionBuilder>(uri: &str, opts: &Opti
             .unwrap_or_else(|| fatal!(3, "SSE connection failed"));
 
     // Build SSE GET request
-    let sse_req = Request::builder()
+    let mut sse_req_builder = Request::builder()
         .method(http::Method::GET)
         .uri(base_uri.clone())
         .header(http::header::HOST, format!("{}:{}", host, port))
         .header(http::header::ACCEPT, MIME_TEXT_EVENT_STREAM)
-        .header(http::header::CACHE_CONTROL, "no-cache")
+        .header(http::header::CACHE_CONTROL, "no-cache");
+
+    for (key, value) in headers.iter() {
+        sse_req_builder = sse_req_builder.header(key, value);
+    }
+
+    let sse_req = sse_req_builder
         .body(Full::new(Bytes::new()))
         .unwrap_or_else(|e| fatal!(3, "failed to build SSE request: {e}"));
 
@@ -623,27 +632,31 @@ pub async fn mcp_sse_initialize<B: HttpConnectionBuilder>(uri: &str, opts: &Opti
         hyper::Uri::from_parts(parts).unwrap_or_else(|e| fatal!(3, "invalid new uri: {e}"))
     };
 
-    // Helper function to send POST request
-    async fn send_post(
-        endpoint: &'static str,
-        uri: &hyper::Uri,
-        host: &str,
-        port: u16,
-        body: Vec<u8>,
-        stats: &mut Statistics,
-        rt_stats: &RealtimeStats,
-        opts: &crate::Options,
-    ) -> http::Response<hyper::body::Incoming> {
-        let (mut sender, _conn_task) =
-            Http1::build_connection::<Full<Bytes>>(endpoint, stats, rt_stats, opts)
-                .await
-                .unwrap_or_else(|| fatal!(3, "POST connection failed"));
+    let (mut post_sender, _) =
+        Http1::build_connection::<Full<Bytes>>(endpoint, &mut stats, &rt_stats, opts)
+            .await
+            .unwrap_or_else(|| fatal!(3, "POST connection failed"));
 
-        let req = Request::builder()
+    // Helper function to send POST request
+    async fn send_post<S>(
+        uri: &hyper::Uri,
+        headers: &HeaderMap,
+        body: Vec<u8>,
+        sender: &mut S,
+    ) -> http::Response<hyper::body::Incoming>
+    where
+        S: RequestSender<Full<Bytes>>,
+    {
+        let mut req_builder = Request::builder()
             .method(http::Method::POST)
             .uri(uri.clone())
-            .header(http::header::HOST, format!("{}:{}", host, port))
-            .header(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON)
+            .header(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON);
+
+        for (key, value) in headers.iter() {
+            req_builder = req_builder.header(key, value);
+        }
+
+        let req = req_builder
             .body(Full::new(Bytes::from(body)))
             .unwrap_or_else(|e| fatal!(3, "failed to build POST request: {e}"));
 
@@ -676,10 +689,7 @@ pub async fn mcp_sse_initialize<B: HttpConnectionBuilder>(uri: &str, opts: &Opti
         .unwrap_or_else(|e| fatal!(3, "failed to serialize initialize request: {e}"));
 
     // Send the initialize request via POST
-    let _ = send_post(
-        endpoint, &new_uri, &host, port, init_body, &mut stats, &rt_stats, &opts,
-    )
-    .await;
+    let _ = send_post(&new_uri, headers, init_body, &mut post_sender).await;
 
     // Read the initialize response from the SSE stream
     let init_response_body = read_sse_event(&mut sse_body, &mut buffer)
@@ -705,17 +715,7 @@ pub async fn mcp_sse_initialize<B: HttpConnectionBuilder>(uri: &str, opts: &Opti
     let initialized_body = serde_json::to_vec(&notif_jsonrpc)
         .unwrap_or_else(|e| fatal!(3, "failed to serialize initialized notification: {e}"));
 
-    let _ = send_post(
-        endpoint,
-        &new_uri,
-        &host,
-        port,
-        initialized_body,
-        &mut stats,
-        &rt_stats,
-        &opts,
-    )
-    .await;
+    let _ = send_post(&new_uri, headers, initialized_body, &mut post_sender).await;
 
     // Step 4: Send tools/list request
     let tools_list_request = ListToolsRequest::default();
@@ -730,17 +730,7 @@ pub async fn mcp_sse_initialize<B: HttpConnectionBuilder>(uri: &str, opts: &Opti
         .unwrap_or_else(|e| fatal!(3, "failed to serialize tools/list request: {e}"));
 
     // Send the request via POST
-    let _ = send_post(
-        endpoint,
-        &new_uri,
-        &host,
-        port,
-        tools_list_body,
-        &mut stats,
-        &rt_stats,
-        &opts,
-    )
-    .await;
+    let _ = send_post(&new_uri, headers, tools_list_body, &mut post_sender).await;
 
     // Read the response from the SSE stream, handling any server requests (like roots/list)
     let tools_response_body;
@@ -763,9 +753,7 @@ pub async fn mcp_sse_initialize<B: HttpConnectionBuilder>(uri: &str, opts: &Opti
                                 .as_i64()
                                 .map(NumberOrString::Number)
                                 .or_else(|| {
-                                    req_id
-                                        .as_str()
-                                        .map(|s| NumberOrString::String(s.into()))
+                                    req_id.as_str().map(|s| NumberOrString::String(s.into()))
                                 })
                                 .unwrap_or(NumberOrString::Number(0)),
                             result: roots_result,
@@ -775,11 +763,7 @@ pub async fn mcp_sse_initialize<B: HttpConnectionBuilder>(uri: &str, opts: &Opti
                             fatal!(3, "failed to serialize roots/list response: {e}")
                         });
 
-                        let _ = send_post(
-                            endpoint, &new_uri, &host, port, roots_body, &mut stats, &rt_stats,
-                            &opts,
-                        )
-                        .await;
+                        let _ = send_post(&new_uri, headers, roots_body, &mut post_sender).await;
 
                         continue; // Keep reading for tools/list response
                     }
