@@ -14,7 +14,8 @@ Plumbrs is a high-performance HTTP/HTTP2 request generator designed for benchmar
 - **Hyper RT1** (`hyper-rt1`) — Legacy Hyper HTTP client shared across a runtime.
 - **Hyper H2** (`hyper-h2`) — HTTP/2 client using Hyper with the h2 library (one per connection).
 - **Reqwest** (`reqwest`) — Popular Reqwest HTTP client (one per runtime).
-- **IoUring** (`io-uring`) — HTTP client using io_uring for high-performance I/O (Linux only).
+- **TokioUring** (`tokio-uring`) — HTTP client using tokio-uring for high-performance I/O (Linux only).
+- **Monoio** (`monoio`) — HTTP client using monoio for high-performance I/O (Linux only).
 - **Help** (`help`) — Print available client types and exit.
 
 ## Basic options
@@ -31,7 +32,7 @@ Plumbrs is a high-performance HTTP/HTTP2 request generator designed for benchmar
 
 - `-r, --requests <NUMBER>` — Maximum requests per worker. If omitted, runs until duration elapses.
 
-- `-C, --client <TYPE>` (default: `auto`) — Client type: `auto`, `hyper`, `hyper-multichunk`, `hyper-h2`, `hyper-legacy`, `hyper-rt1`, `reqwest`, `io-uring`, or `help`.
+- `-C, --client <TYPE>` (default: `auto`) — Client type: `auto`, `hyper`, `hyper-multichunk`, `hyper-h2`, `hyper-legacy`, `hyper-rt1`, `reqwest`, `tokio-uring`, `monoio`, or `help`.
 
 - `--cps` — Open a new connection for every request, measuring Connections Per Second.
 
@@ -59,7 +60,7 @@ Plumbrs is a high-performance HTTP/HTTP2 request generator designed for benchmar
 
 - `-b, --body-from-file <PATH>` — File path for request body (streamed).
 
-- `--http2` — Use HTTP/2 only. Not available with `io-uring` client.
+- `--http2` — Use HTTP/2 only. Not available with `tokio-uring` or `monoio` clients.
 
 ## MCP options (requires `mcp` feature)
 
@@ -122,7 +123,7 @@ plumbrs -c 10 -d 30 http://localhost:3001/sse --mcp-sse
 
 ## io_uring options (Linux only)
 
-The `io-uring` client supports HTTP/1 only and does not support multi-threaded runtimes (`-m`).
+The `tokio-uring` and `monoio` clients support HTTP/1 only and do not support multi-threaded runtimes (`-m`).
 
 - `--uring-entries <NUMBER>` (default: `4096`) — Size of the io_uring Submission Queue.
 - `--uring-sqpoll <MILLISECONDS>` — Enable kernel-side submission polling with idle timeout.
@@ -130,24 +131,24 @@ The `io-uring` client supports HTTP/1 only and does not support multi-threaded r
 ## Examples
 
 Basic GET request with 10 concurrent connections for 30 seconds:
-```plumbrs/README.md#L1
+```
 plumbrs -c 10 -d 30 http://localhost:8080
 ```
 
 POST request with headers and body:
-```plumbrs/README.md#L1
+```
 plumbrs -t 4 -c 100 -M POST \
   -H "Content-Type:application/json" \
   -B '{"key":"value"}' http://localhost:8080/api
 ```
 
 POST with body from file:
-```plumbrs/README.md#L1
+```
 plumbrs -M POST -b ./payload.json http://localhost:8080/api
 ```
 
 HTTP/2 with flow control tuning:
-```plumbrs/README.md#L1
+```
 plumbrs -C hyper --http2 \
   --http2-initial-stream-window-size 1048576 \
   --http2-initial-connection-window-size 2097152 \
@@ -155,12 +156,12 @@ plumbrs -C hyper --http2 \
 ```
 
 Connections Per Second test:
-```plumbrs/README.md#L1
+```
 plumbrs -C hyper --cps -c 10 -r 1000 http://localhost:8080
 ```
 
 Latency-corrected benchmarking:
-```plumbrs/README.md#L1
+```
 plumbrs --latency -c 100 -d 30 http://localhost:8080
 ```
 
@@ -170,7 +171,7 @@ plumbrs --latency -c 100 -d 30 http://localhost:8080
 
 ![HTTP/1.1 Performance](pics/http1_perf.png)
 
-The `io-uring` client delivers **382K RPS on a single thread** and scales to **1.05M RPS with 4 threads**. The `hyper` client also performs exceptionally (198K → 724K RPS), surpassing `wrk`. The `reqwest` client maintains competitive throughput (109K → 397K RPS).
+The `tokio-uring` client delivers **382K RPS on a single thread** and scales to **+1.1M RPS with 4 threads**. The `hyper` client also performs exceptionally (198K → 724K RPS), surpassing `wrk`. The `reqwest` client maintains competitive throughput (109K → 397K RPS).
 
 ### HTTP/2
 
@@ -181,6 +182,6 @@ The `hyper-h2` client achieves **187K RPS on a single thread** and **689K RPS wi
 ## Enabling Tokio unstable APIs
 
 Some options require Tokio's unstable APIs:
-```plumbrs/README.md#L1
+```
 RUSTFLAGS="--cfg tokio_unstable" cargo build --release
 ```
