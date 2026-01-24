@@ -7,19 +7,19 @@ use crate::client::hyper_legacy::*;
 use crate::client::hyper_mcp::http_hyper_mcp;
 use crate::client::hyper_multichunk::http_hyper_multichunk;
 use crate::client::hyper_rt1::{RequestBody, http_hyper_rt1};
-#[cfg(all(target_os = "linux", feature = "tokio_uring"))]
-use crate::client::tokio_uring::*;
 #[cfg(all(target_os = "linux", feature = "monoio"))]
 use crate::client::monoio::*;
-#[cfg(all(target_os = "linux", feature = "monoio"))]
-use io_uring;
 use crate::client::reqwest::*;
+#[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+use crate::client::tokio_uring::*;
 use crate::client::utils::build_http_connection_legacy;
 use crate::metrics::Metrics;
 use crate::stats::RealtimeStats;
 use crate::stats::Statistics;
 use atomic_time::AtomicDuration;
 use atomic_time::AtomicInstant;
+#[cfg(all(target_os = "linux", feature = "monoio"))]
+use io_uring;
 
 use std::sync::Arc;
 use std::thread;
@@ -474,7 +474,7 @@ fn monoio_thread(
             for con in 0..opts.connections {
                 let opts_clone = Arc::clone(&opts);
                 let stats_clone = Arc::clone(&rt_stats);
-                
+
                 tasks.push(monoio::spawn(async move {
                     http_monoio(id, con, opts_clone, &stats_clone[id]).await
                 }));

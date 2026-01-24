@@ -5,11 +5,11 @@ pub mod hyper_legacy;
 pub mod hyper_mcp;
 pub mod hyper_multichunk;
 pub mod hyper_rt1;
-#[cfg(all(target_os = "linux", feature = "tokio_uring"))]
-pub mod tokio_uring;
 #[cfg(all(target_os = "linux", feature = "monoio"))]
 pub mod monoio;
 pub mod reqwest;
+#[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+pub mod tokio_uring;
 pub mod utils;
 use clap::ValueEnum;
 
