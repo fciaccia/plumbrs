@@ -5,8 +5,8 @@ pub mod hyper_legacy;
 pub mod hyper_mcp;
 pub mod hyper_multichunk;
 pub mod hyper_rt1;
-#[cfg(all(target_os = "linux", feature = "io_uring"))]
-pub mod io_uring;
+#[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+pub mod tokio_uring;
 pub mod reqwest;
 pub mod utils;
 use clap::ValueEnum;
@@ -22,8 +22,8 @@ pub enum ClientType {
     HyperH2,
     Hyper,
     Reqwest,
-    #[cfg(all(target_os = "linux", feature = "io_uring"))]
-    IoUring,
+    #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+    TokioUring,
     Help,
 }
 
@@ -39,8 +39,8 @@ impl std::fmt::Display for ClientType {
             #[cfg(feature = "mcp")]
             ClientType::HyperMcp => write!(f, "hyper-mcp"),
             ClientType::Reqwest => write!(f, "reqwest"),
-            #[cfg(all(target_os = "linux", feature = "io_uring"))]
-            ClientType::IoUring => write!(f, "io-uring"),
+            #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+            ClientType::TokioUring => write!(f, "tokio-uring"),
             ClientType::Help => write!(f, "help"),
         }
     }

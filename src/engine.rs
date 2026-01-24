@@ -7,8 +7,8 @@ use crate::client::hyper_legacy::*;
 use crate::client::hyper_mcp::http_hyper_mcp;
 use crate::client::hyper_multichunk::http_hyper_multichunk;
 use crate::client::hyper_rt1::{RequestBody, http_hyper_rt1};
-#[cfg(all(target_os = "linux", feature = "io_uring"))]
-use crate::client::io_uring::*;
+#[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+use crate::client::tokio_uring::*;
 use crate::client::reqwest::*;
 use crate::client::utils::build_http_connection_legacy;
 use crate::metrics::Metrics;
@@ -90,13 +90,13 @@ pub fn run_tokio_engines(opts: Options) -> Result<()> {
         };
 
         let handle = thread::spawn(move || -> Result<(Statistics, Metrics)> {
-            #[cfg(all(target_os = "linux", feature = "io_uring"))]
-            if matches!(opts.client_type, ClientType::IoUring) {
+            #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+            if matches!(opts.client_type, ClientType::TokioUring) {
                 tokio_uring_thread(id, opts, stats)
             } else {
                 tokio_thread(id, opts, stats)
             }
-            #[cfg(not(all(target_os = "linux", feature = "io_uring")))]
+            #[cfg(not(all(target_os = "linux", feature = "tokio_uring")))]
             tokio_thread(id, opts, stats)
         });
 
@@ -402,7 +402,7 @@ fn tokio_thread(
     Ok((stats, metrics))
 }
 
-#[cfg(all(target_os = "linux", feature = "io_uring"))]
+#[cfg(all(target_os = "linux", feature = "tokio_uring"))]
 fn tokio_uring_thread(
     id: usize,
     opts: Options,
@@ -502,8 +502,8 @@ async fn spawn_tasks(
             ClientType::Reqwest => {
                 tasks.spawn(async move { http_reqwest(id, con, opts, &stats[id]).await });
             }
-            #[cfg(all(target_os = "linux", feature = "io_uring"))]
-            ClientType::IoUring => {
+            #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+            ClientType::TokioUring => {
                 tasks.spawn_local(async move { http_io_uring(id, con, opts, &stats[id]).await });
             }
             ClientType::Help => (),

@@ -56,18 +56,18 @@ fn check_options(opts: &mut Options) -> Result<()> {
     }
 
     match opts.client_type {
-        #[cfg(all(target_os = "linux", feature = "io_uring"))]
-        ClientType::IoUring if opts.http2 => {
-            return Err(anyhow!("HTTP/2 not supported with io-uring client!"));
+        #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+        ClientType::TokioUring if opts.http2 => {
+            return Err(anyhow!("HTTP/2 not supported with tokio-uring client!"));
         }
-        #[cfg(all(target_os = "linux", feature = "io_uring"))]
-        ClientType::IoUring if opts.multithreaded.unwrap_or(1) > 1 => {
+        #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+        ClientType::TokioUring if opts.multithreaded.unwrap_or(1) > 1 => {
             return Err(anyhow!(
                 "Multithreaded runtime not supported with io-uring client!"
             ));
         }
-        #[cfg(all(target_os = "linux", feature = "io_uring"))]
-        ClientType::IoUring if opts.uri.is_empty() => {
+        #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+        ClientType::TokioUring if opts.uri.is_empty() => {
             println!("Missing URI. Try --help");
             std::process::exit(1);
         }
@@ -107,7 +107,7 @@ fn check_options(opts: &mut Options) -> Result<()> {
             println!(
                 "  reqwest           - Reqwest client, one per runtime. Both HTTP/1 and HTTP/2"
             );
-            println!("  io-uring          - IO-uring client, one per thread. Only HTTP/1");
+            println!("  tokio-uring       - Tokio-uring client, one per thread. Only HTTP/1");
             std::process::exit(0);
         }
         _ => (),

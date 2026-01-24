@@ -78,7 +78,7 @@ pub async fn http_io_uring(
         if cid < opts.uri.len() && !banner.contains(uri_str) {
             banner.insert(uri_str.to_owned());
             println!(
-                "io-uring [{tid:>2}] -> connecting to {}:{}, method = {} uri = {} ...",
+                "tokio-uring [{tid:>2}] -> connecting to {}:{}, method = {} uri = {} ...",
                 host,
                 port,
                 opts.method.as_ref().unwrap_or(&http::Method::GET),
