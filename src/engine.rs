@@ -9,6 +9,10 @@ use crate::client::hyper_multichunk::http_hyper_multichunk;
 use crate::client::hyper_rt1::{RequestBody, http_hyper_rt1};
 #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
 use crate::client::tokio_uring::*;
+#[cfg(all(target_os = "linux", feature = "monoio"))]
+use crate::client::monoio::*;
+#[cfg(all(target_os = "linux", feature = "monoio"))]
+use io_uring;
 use crate::client::reqwest::*;
 use crate::client::utils::build_http_connection_legacy;
 use crate::metrics::Metrics;
@@ -92,11 +96,12 @@ pub fn run_tokio_engines(opts: Options) -> Result<()> {
         let handle = thread::spawn(move || -> Result<(Statistics, Metrics)> {
             #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
             if matches!(opts.client_type, ClientType::TokioUring) {
-                tokio_uring_thread(id, opts, stats)
-            } else {
-                tokio_thread(id, opts, stats)
+                return tokio_uring_thread(id, opts, stats);
             }
-            #[cfg(not(all(target_os = "linux", feature = "tokio_uring")))]
+            #[cfg(all(target_os = "linux", feature = "monoio"))]
+            if matches!(opts.client_type, ClientType::Monoio) {
+                return monoio_thread(id, opts, stats);
+            }
             tokio_thread(id, opts, stats)
         });
 
@@ -436,6 +441,58 @@ fn tokio_uring_thread(
     Ok((stats, metrics))
 }
 
+#[cfg(all(target_os = "linux", feature = "monoio"))]
+fn monoio_thread(
+    id: usize,
+    opts: Options,
+    rt_stats: Arc<Vec<RealtimeStats>>,
+) -> Result<(Statistics, Metrics)> {
+    let metrics = Metrics::default();
+    let opts = Arc::new(opts);
+
+    let num_entries = opts.uring_entries.next_power_of_two();
+    let cqsize = num_entries * 2;
+
+    let mut uring = io_uring::IoUring::builder();
+
+    uring.setup_single_issuer().setup_cqsize(cqsize);
+
+    if let Some(idle) = opts.uring_sqpoll {
+        uring.setup_sqpoll(idle);
+    } else {
+        uring.setup_coop_taskrun().setup_taskrun_flag();
+    }
+
+    let stats = monoio::RuntimeBuilder::<monoio::IoUringDriver>::new()
+        .with_entries(num_entries)
+        .uring_builder(uring)
+        .build()
+        .expect("Failed to build monoio runtime")
+        .block_on(async move {
+            let mut tasks = Vec::new();
+
+            for con in 0..opts.connections {
+                let opts_clone = Arc::clone(&opts);
+                let stats_clone = Arc::clone(&rt_stats);
+                
+                tasks.push(monoio::spawn(async move {
+                    http_monoio(id, con, opts_clone, &stats_clone[id]).await
+                }));
+            }
+
+            let mut statistics = Statistics::default();
+            for task in tasks {
+                match task.await {
+                    s => statistics = statistics + s,
+                }
+            }
+
+            statistics
+        });
+
+    Ok((stats, metrics))
+}
+
 async fn spawn_tasks(
     id: usize,
     opts: Arc<Options>,
@@ -505,6 +562,10 @@ async fn spawn_tasks(
             #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
             ClientType::TokioUring => {
                 tasks.spawn_local(async move { http_io_uring(id, con, opts, &stats[id]).await });
+            }
+            #[cfg(all(target_os = "linux", feature = "monoio"))]
+            ClientType::Monoio => {
+                // Monoio tasks are spawned in monoio_thread, not here
             }
             ClientType::Help => (),
         }

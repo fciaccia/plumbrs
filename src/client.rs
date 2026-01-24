@@ -7,6 +7,8 @@ pub mod hyper_multichunk;
 pub mod hyper_rt1;
 #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
 pub mod tokio_uring;
+#[cfg(all(target_os = "linux", feature = "monoio"))]
+pub mod monoio;
 pub mod reqwest;
 pub mod utils;
 use clap::ValueEnum;
@@ -24,6 +26,8 @@ pub enum ClientType {
     Reqwest,
     #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
     TokioUring,
+    #[cfg(all(target_os = "linux", feature = "monoio"))]
+    Monoio,
     Help,
 }
 
@@ -41,6 +45,8 @@ impl std::fmt::Display for ClientType {
             ClientType::Reqwest => write!(f, "reqwest"),
             #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
             ClientType::TokioUring => write!(f, "tokio-uring"),
+            #[cfg(all(target_os = "linux", feature = "monoio"))]
+            ClientType::Monoio => write!(f, "monoio"),
             ClientType::Help => write!(f, "help"),
         }
     }

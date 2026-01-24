@@ -108,6 +108,7 @@ fn check_options(opts: &mut Options) -> Result<()> {
                 "  reqwest           - Reqwest client, one per runtime. Both HTTP/1 and HTTP/2"
             );
             println!("  tokio-uring       - Tokio-uring client, one per thread. Only HTTP/1");
+            println!("  monoio            - Monoio client, one per thread. Only HTTP/1");
             std::process::exit(0);
         }
         _ => (),

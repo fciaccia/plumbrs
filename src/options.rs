@@ -178,7 +178,7 @@ pub struct Options {
     )]
     pub mcp_sse: bool,
 
-    #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+    #[cfg(all(target_os = "linux", any(feature = "tokio_uring", feature = "monoio")))]
     #[arg(
         long,
         help = "Size of the io_uring Submission Queue (SQ)",
@@ -186,7 +186,7 @@ pub struct Options {
     )]
     pub uring_entries: u32,
 
-    #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+    #[cfg(all(target_os = "linux", any(feature = "tokio_uring", feature = "monoio")))]
     #[arg(
         long,
         help = "Enable kernel-side submission polling with idle timeout in milliseconds."

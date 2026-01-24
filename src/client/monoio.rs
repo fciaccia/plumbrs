@@ -3,8 +3,9 @@ use std::{collections::HashSet, sync::Arc, time::Instant};
 use bytes::Bytes;
 use http::{Request, StatusCode};
 use http_body_util::{BodyExt, Either, Full};
-use http_wire::{WireDecode, WireEncodeAsync, response::ResponseStatusCode};
-use tokio_uring::net::TcpStream;
+use http_wire::{WireDecode, WireEncode, response::ResponseStatusCode};
+use monoio::io::{AsyncReadRent, AsyncWriteRentExt};
+use monoio::net::TcpStream;
 
 use crate::{
     client::utils::{
@@ -15,7 +16,7 @@ use crate::{
     stats::{RealtimeStats, Statistics},
 };
 
-pub async fn http_io_uring(
+pub async fn http_monoio(
     tid: usize,
     cid: usize,
     opts: Arc<Options>,
@@ -65,8 +66,7 @@ pub async fn http_io_uring(
 
     // Pre-serialize the request to bytes ONCE outside the loop for better performance
     let request_bytes = req
-        .encode_async()
-        .await
+        .encode()
         .unwrap_or_else(|e| fatal!(2, "could not serialize request: {e}"));
 
     let start = Instant::now();
@@ -78,7 +78,7 @@ pub async fn http_io_uring(
         if cid < opts.uri.len() && !banner.contains(uri_str) {
             banner.insert(uri_str.to_owned());
             println!(
-                "tokio-uring [{tid:>2}] -> connecting to {}:{}, method = {} uri = {} ...",
+                "monoio [{tid:>2}] -> connecting to {}:{}, method = {} uri = {} ...",
                 host,
                 port,
                 opts.method.as_ref().unwrap_or(&http::Method::GET),
@@ -87,11 +87,7 @@ pub async fn http_io_uring(
         }
 
         // Connect to the endpoint...
-        let addr = endpoint
-            .parse()
-            .unwrap_or_else(|e| fatal!(1, "invalid address: {e}"));
-
-        let stream = match TcpStream::connect(addr).await {
+        let mut stream = match TcpStream::connect(&*endpoint).await {
             Ok(s) => s,
             Err(ref err) => {
                 statistics.set_error(err, rt_stats);
