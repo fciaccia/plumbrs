@@ -3,7 +3,7 @@ use std::{collections::HashSet, sync::Arc, time::Instant};
 use bytes::Bytes;
 use http::{Request, StatusCode};
 use http_body_util::{BodyExt, Either, Full};
-use http_wire::{WireDecode, WireEncodeAsync, response::ResponseStatusCode};
+use http_wire::{WireDecode, WireEncodeAsync, response::FullResponse};
 use tokio_uring::net::TcpStream;
 
 use crate::{
@@ -142,9 +142,11 @@ pub async fn http_io_uring(
                 // Append new data to connection buffer
                 connection_buffer.extend_from_slice(&read_buf[..bytes_read]);
 
+                let mut headers = [httparse::EMPTY_HEADER; 16];
+
                 // Check if we have a complete response
-                if let Some((status_code, response_end)) =
-                    ResponseStatusCode::decode(&connection_buffer)
+                if let Ok((resp, response_end)) =
+                    FullResponse::decode(&connection_buffer, &mut headers)
                 {
                     // Record latency if enabled
                     if let Some(start_lat) = start_lat
@@ -154,9 +156,15 @@ pub async fn http_io_uring(
                     }
 
                     // Update statistics based on status code
-                    match status_code {
-                        StatusCode::OK => statistics.inc_ok(rt_stats),
-                        code => statistics.set_http_status(code, rt_stats),
+                    match resp.head.code {
+                        Some(200) => statistics.inc_ok(rt_stats),
+                        Some(c) => {
+                            let code = StatusCode::from_u16(c).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                            statistics.set_http_status(code, rt_stats);
+                        }
+                        None => {
+                            statistics.set_http_status(StatusCode::INTERNAL_SERVER_ERROR, rt_stats);
+                        }
                     }
 
                     // Remove processed response from buffer
