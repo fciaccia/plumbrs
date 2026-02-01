@@ -142,6 +142,29 @@ fn print_results(
     show_metrics: bool,
     total_metrics: &Metrics,
 ) {
+    println!();
+
+    // Summary table
+    print_summary(total, threads);
+
+    // Stats table
+    print_stats(total, duration);
+
+    // Errors table
+    print_errors(total, duration);
+
+    // Latency table
+    print_latency(total);
+
+    // Display metrics if enabled
+    if show_metrics {
+        total_metrics.display();
+    }
+}
+
+fn print_summary(total: &Statistics, threads: usize) {
+    println!("Summary:");
+
     let total_ok = total.ok();
     let total_conn = total.conn();
     let total_3xx = total.status_3xx();
@@ -150,14 +173,10 @@ fn print_results(
     let total_err = total.errors();
     let idle_perc = total.idle() / (threads as f64) * 100.0;
 
-    // Summary table
-    println!();
-    println!("Summary:");
-
     let mut builder = TableBuilder::default();
     builder.push_record(["", "okay", "conn", "3xx", "4xx", "5xx", "err", "%idle"]);
     builder.push_record([
-        "Total",
+        "total",
         &total_ok.to_string(),
         &total_conn.to_string(),
         &total_3xx.to_string(),
@@ -168,24 +187,27 @@ fn print_results(
     ]);
     let table = builder
         .build()
-        .with(Style::rounded())
+        .with(Style::sharp())
         .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
         .to_string();
     println!("{}", table);
+}
 
-    // Details table
+fn print_stats(total: &Statistics, duration: u64) {
+    let total_ok = total.ok();
+
     let ok_sec = if duration > 0 {
         total_ok * 1000000 / duration
     } else {
         0
     };
     let mut builder = TableBuilder::default();
-    builder.push_record(["status", "total", "rate/sec"]);
-    let mut has_details = false;
+    builder.push_record(["status", "total", "rate"]);
+    let mut has_stats = false;
 
     if total_ok > 0 {
         builder.push_record(["200", &total_ok.to_string(), &ok_sec.to_string()]);
-        has_details = true;
+        has_stats = true;
     }
 
     for (key, total_value) in total.http_status().iter() {
@@ -199,21 +221,22 @@ fn print_results(
             &total_value.to_string(),
             &per_sec.to_string(),
         ]);
-        has_details = true;
+        has_stats = true;
     }
 
-    if has_details {
+    if has_stats {
         println!();
-        println!(" Details:");
+        println!(" Stats:");
         let table = builder
             .build()
-            .with(Style::rounded())
+            .with(Style::sharp())
             .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
             .to_string();
         println!("{}", table);
     }
+}
 
-    // Errors table
+fn print_errors(total: &Statistics, duration: u64) {
     let errors: Vec<_> = total.errors_map().iter().collect();
     if !errors.is_empty() {
         println!();
@@ -237,54 +260,39 @@ fn print_results(
 
         let table = builder
             .build()
-            .with(Style::rounded())
+            .with(Style::sharp())
             .with(Modify::new(Columns::first()).with(Width::truncate(55)))
             .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
             .to_string();
         println!("{}", table);
     }
+}
 
-    // Latency table
+fn print_latency(total: &Statistics) {
     if let Some(ref latency) = total.latency {
         println!();
         println!(" Latency:");
         let mut builder = TableBuilder::default();
-        builder.push_record(["", "p50", "p75", "p90", "p99"]);
+        builder.push_record(["", "p50", "p75", "p90", "p99", "min", "mean", "max"]);
         builder.push_record([
-            "percentiles",
+            "value",
             &pretty_lat(latency.value_at_quantile(0.50) as f64),
             &pretty_lat(latency.value_at_quantile(0.75) as f64),
             &pretty_lat(latency.value_at_quantile(0.95) as f64),
             &pretty_lat(latency.value_at_quantile(0.99) as f64),
-        ]);
-        let table = builder
-            .build()
-            .with(Style::rounded())
-            .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
-            .to_string();
-        println!("{}", table);
-
-        let mut builder = TableBuilder::default();
-        builder.push_record(["", "min", "mean", "max"]);
-        builder.push_record([
-            "stats",
             &pretty_lat(latency.min() as f64),
             &pretty_lat(latency.mean()),
             &pretty_lat(latency.max() as f64),
         ]);
         let table = builder
             .build()
-            .with(Style::rounded())
+            .with(Style::sharp())
             .with(Modify::new(Columns::new(1..)).with(Alignment::right()))
             .to_string();
         println!("{}", table);
     }
-
-    // Display metrics if enabled
-    if show_metrics {
-        total_metrics.display();
-    }
 }
+
 
 fn tokio_thread(
     id: usize,
