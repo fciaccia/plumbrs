@@ -37,6 +37,7 @@ pub async fn http_reqwest(
         },
     );
 
+    let clock = quanta::Clock::new();
     let start = Instant::now();
     'connection: loop {
         if should_stop(total, start, &opts) {
@@ -75,7 +76,7 @@ pub async fn http_reqwest(
                 *req.body_mut() = Some(body.clone().into());
             }
 
-            let start_lat = opts.latency.then_some(Instant::now());
+            let start_lat = opts.latency.then_some(clock.raw());
 
             match client.execute(req).await {
                 Ok(res) => {
@@ -96,7 +97,7 @@ pub async fn http_reqwest(
             if let Some(start_lat) = start_lat
                 && let Some(hist) = &mut statistics.latency
             {
-                hist.record(start_lat.elapsed().as_micros() as u64).ok();
+                hist.record(clock.delta_as_nanos(start_lat, clock.raw()) / 1000).ok();
             };
 
             total += 1;

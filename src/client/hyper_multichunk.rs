@@ -50,6 +50,7 @@ async fn http_hyper_client<B: HttpConnectionBuilder>(
     let trailers = build_trailers(opts.as_ref())
         .unwrap_or_else(|e| fatal!(2, "could not build trailers: {e}"));
 
+    let clock = quanta::Clock::new();
     let start = Instant::now();
     'connection: loop {
         if should_stop(total, start, &opts) {
@@ -101,7 +102,7 @@ async fn http_hyper_client<B: HttpConnectionBuilder>(
             *req.uri_mut() = uri.clone();
             *req.headers_mut() = headers.clone();
 
-            let start_lat = opts.latency.then_some(Instant::now());
+            let start_lat = opts.latency.then_some(clock.raw());
 
             match sender.send_request(req).await {
                 Ok(res) => match discard_body(res).await {
@@ -123,7 +124,7 @@ async fn http_hyper_client<B: HttpConnectionBuilder>(
             if let Some(start_lat) = start_lat
                 && let Some(hist) = &mut statistics.latency
             {
-                hist.record(start_lat.elapsed().as_micros() as u64).ok();
+                hist.record(clock.delta_as_nanos(start_lat, clock.raw()) / 1000).ok();
             };
 
             total += 1;

@@ -69,6 +69,7 @@ pub async fn http_io_uring(
         .await
         .unwrap_or_else(|e| fatal!(2, "could not serialize request: {e}"));
 
+    let clock = quanta::Clock::new();
     let start = Instant::now();
     'connection: loop {
         if should_stop(total, start, &opts) {
@@ -108,7 +109,7 @@ pub async fn http_io_uring(
         let request = request_bytes.clone();
         let mut request: Vec<u8> = request.into();
         loop {
-            let start_lat = opts.latency.then_some(Instant::now());
+            let start_lat = opts.latency.then_some(clock.raw());
 
             // Write the pre-serialized request
             let (result, req_buf) = stream.write_all(request).await;
@@ -152,7 +153,7 @@ pub async fn http_io_uring(
                     if let Some(start_lat) = start_lat
                         && let Some(hist) = &mut statistics.latency
                     {
-                        hist.record(start_lat.elapsed().as_micros() as u64).ok();
+                        hist.record(clock.delta_as_nanos(start_lat, clock.raw()) / 1000).ok();
                     }
 
                     // Update statistics based on status code
